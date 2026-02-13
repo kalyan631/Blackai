@@ -60,6 +60,7 @@
             background: #ffffff; z-index: 9999;
             display: flex; justify-content: center; align-items: center;
             font-size: 1.2rem; color: #4b5563; flex-direction: column;
+            transition: opacity 0.5s ease;
         }
         .spinner {
             width: 40px; height: 40px; border: 4px solid #e5e7eb;
@@ -74,6 +75,7 @@
     <div id="loading">
         <div class="spinner"></div>
         <div>Initializing App...</div>
+        <div style="font-size: 0.8rem; margin-top: 10px; color: #999;">(Click screen if stuck)</div>
     </div>
 
     <aside id="sidebar" class="fixed inset-y-0 left-0 z-40 w-64 bg-gray-50 dark:bg-gemini-surface transform -translate-x-full md:translate-x-0 transition-transform duration-300 flex flex-col border-r border-gray-200 dark:border-gray-700 shadow-lg md:shadow-none md:static">
@@ -180,9 +182,35 @@
     </div>
 
     <script>
+        // --- SAFE LOADER REMOVAL (FIX) ---
+        function hideLoader() {
+            const loader = document.getElementById('loading');
+            if (loader) {
+                loader.style.opacity = '0';
+                setTimeout(() => loader.style.display = 'none', 500);
+            }
+        }
+        
+        // Force remove loader after 3 seconds if something fails
+        setTimeout(hideLoader, 3000);
+        
+        // Also allow clicking the loader to dismiss it
+        document.getElementById('loading').addEventListener('click', hideLoader);
+
         // --- STATE MANAGEMENT ---
+        // Helper to safely parse JSON
+        function safeJSONParse(key, fallback) {
+            try {
+                const item = localStorage.getItem(key);
+                return item ? JSON.parse(item) : fallback;
+            } catch (e) {
+                console.error("JSON Parse Error for", key, e);
+                return fallback;
+            }
+        }
+
         const state = {
-            chats: JSON.parse(localStorage.getItem('chats')) || {},
+            chats: safeJSONParse('chats', {}),
             currentChatId: null,
             settings: {
                 apiKey: localStorage.getItem('apiKey') || '',
@@ -196,7 +224,6 @@
         // --- DOM ELEMENTS ---
         const els = {
             app: document.body,
-            loader: document.getElementById('loading'),
             chatContainer: document.getElementById('chat-container'),
             input: document.getElementById('user-input'),
             sidebar: document.getElementById('sidebar'),
@@ -212,23 +239,29 @@
         };
 
         // --- INITIALIZATION ---
-        window.addEventListener('load', () => {
-            applyTheme();
-            renderHistory();
-            
-            // Restore last chat or clean state
-            const lastId = localStorage.getItem('lastChatId');
-            if (lastId && state.chats[lastId]) {
-                loadChat(lastId);
-            } else {
-                state.currentChatId = null; // Ensure fresh start state
+        function initApp() {
+            try {
+                applyTheme();
+                renderHistory();
+                
+                const lastId = localStorage.getItem('lastChatId');
+                if (lastId && state.chats[lastId]) {
+                    loadChat(lastId);
+                } else {
+                    state.currentChatId = null;
+                }
+                
+                // App is ready, hide loader
+                hideLoader();
+            } catch (error) {
+                console.error("Init Error:", error);
+                // Even if error, hide loader so user can see UI
+                hideLoader();
             }
+        }
 
-            setTimeout(() => {
-                els.loader.style.opacity = '0';
-                setTimeout(() => els.loader.remove(), 500);
-            }, 500);
-        });
+        // Run Init
+        window.addEventListener('DOMContentLoaded', initApp);
 
         // --- THEME ---
         function toggleTheme() {
@@ -285,7 +318,7 @@
             els.welcome.classList.remove('hidden');
             els.input.value = '';
             els.input.focus();
-            if (window.innerWidth < 768) toggleSidebar(); // Close sidebar on mobile
+            if (window.innerWidth < 768) els.sidebar.classList.add('-translate-x-full'); 
             renderHistory();
         }
 
@@ -407,7 +440,13 @@
                                 const data = JSON.parse(dataStr);
                                 const delta = data.choices[0].delta.content || "";
                                 aiResponse += delta;
-                                contentEl.innerHTML = marked.parse(aiResponse);
+                                
+                                // Render markdown if available, else plain text
+                                if (window.marked) {
+                                    contentEl.innerHTML = marked.parse(aiResponse);
+                                } else {
+                                    contentEl.innerText = aiResponse;
+                                }
                                 scrollToBottom();
                             } catch (e) {
                                 // Ignore parse errors for partial chunks
@@ -421,7 +460,10 @@
                 saveData();
 
             } catch (error) {
-                document.getElementById(aiMsgId).querySelector('.message-content').innerHTML = `<span class="text-red-500">Error: ${error.message}</span>`;
+                const errMsgEl = document.getElementById(aiMsgId);
+                if(errMsgEl) {
+                    errMsgEl.querySelector('.message-content').innerHTML = `<span class="text-red-500">Error: ${error.message}</span>`;
+                }
             } finally {
                 state.isGenerating = false;
                 renderHistory(); // Update title order if needed
@@ -435,4 +477,86 @@
                 saveData();
             }
 
-            return 
+            return appendMessageToDOM(role, content, isLoading);
+        }
+
+        function appendMessageToDOM(role, content, isLoading) {
+            const msgId = `msg-${Date.now()}-${Math.random()}`;
+            const isUser = role === 'user';
+            
+            const div = document.createElement('div');
+            div.id = msgId;
+            div.className = `flex w-full ${isUser ? 'justify-end' : 'justify-start'} mb-6`;
+            
+            const avatar = isUser 
+                ? `<div class="w-8 h-8 rounded-full bg-gray-300 flex items-center justify-center ml-3"><i class="fa-solid fa-user text-gray-600"></i></div>`
+                : `<div class="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-500 to-red-500 flex items-center justify-center mr-3"><i class="fa-solid fa-sparkles text-white text-xs"></i></div>`;
+
+            const bubbleClass = isUser
+                ? 'bg-gray-100 dark:bg-gray-700 rounded-2xl rounded-tr-sm px-5 py-3 max-w-[85%] md:max-w-[70%]'
+                : 'w-full max-w-[90%] md:max-w-[80%]';
+
+            // Check if marked is loaded
+            const parsedContent = (window.marked && !isUser && !isLoading) ? marked.parse(content) : content;
+
+            const innerContent = isLoading 
+                ? `<div class="message-content prose dark:prose-invert max-w-none"><i class="fa-solid fa-circle-notch fa-spin text-blue-500"></i> Thinking...</div>` 
+                : `<div class="message-content prose dark:prose-invert max-w-none text-sm md:text-base leading-relaxed ${isUser ? '' : 'typing-cursor'}">${isUser ? content : parsedContent}</div>`;
+
+            div.innerHTML = isUser 
+                ? `<div class="${bubbleClass}">${innerContent}</div>${avatar}`
+                : `${avatar}<div class="${bubbleClass}">${innerContent}</div>`;
+
+            els.chatContainer.appendChild(div);
+            scrollToBottom();
+            
+            if (!isLoading && !isUser) {
+                 setTimeout(() => {
+                    const el = div.querySelector('.typing-cursor');
+                    if(el) el.classList.remove('typing-cursor');
+                 }, 100);
+            }
+
+            return msgId;
+        }
+
+        function saveData() {
+            localStorage.setItem('chats', JSON.stringify(state.chats));
+        }
+
+        // --- SETTINGS ---
+        function openSettings() {
+            els.inputs.key.value = state.settings.apiKey;
+            els.inputs.model.value = state.settings.model;
+            els.inputs.system.value = state.settings.systemPrompt;
+            els.settingsModal.classList.remove('hidden');
+            setTimeout(() => {
+                els.settingsContent.classList.remove('scale-95', 'opacity-0');
+                els.settingsContent.classList.add('scale-100', 'opacity-100');
+            }, 10);
+        }
+
+        function closeSettings() {
+            els.settingsContent.classList.remove('scale-100', 'opacity-100');
+            els.settingsContent.classList.add('scale-95', 'opacity-0');
+            setTimeout(() => els.settingsModal.classList.add('hidden'), 200);
+        }
+
+        function saveSettings() {
+            state.settings.apiKey = els.inputs.key.value.trim();
+            state.settings.model = els.inputs.model.value.trim();
+            state.settings.systemPrompt = els.inputs.system.value.trim();
+            
+            localStorage.setItem('apiKey', state.settings.apiKey);
+            localStorage.setItem('model', state.settings.model);
+            localStorage.setItem('systemPrompt', state.settings.systemPrompt);
+            closeSettings();
+        }
+
+        // Close modal on outside click
+        els.settingsModal.addEventListener('click', (e) => {
+            if (e.target === els.settingsModal) closeSettings();
+        });
+    </script>
+</body>
+</html>
